@@ -1,0 +1,37 @@
+[project]
+name = "ecos-mcp"
+version = "0.1.0"
+description = "MCP server for Bank of Korea ECOS (Economic Statistics System) Open API"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "kgy0617", email = "35395723+kgy0617@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+keywords = ["mcp", "model-context-protocol", "ecos", "bank-of-korea", "economics", "statistics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/kgy0617/ecos_mcp"
+Repository = "https://github.com/kgy0617/ecos_mcp"
+Issues = "https://github.com/kgy0617/ecos_mcp/issues"
+
+[project.scripts]
+ecos-mcp = "ecos_mcp:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
