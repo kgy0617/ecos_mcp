@@ -317,15 +317,7 @@ uv run pytest            # 오프라인 단위 테스트 (ECOS API를 모킹, �
 uv run pytest -m live    # 실제 ECOS API 호출 테스트 (모든 프리셋 조회 확인)
 ```
 
-## 🗂️ 통계표 인덱스 갱신
 
-`search_statistic_tables`는 패키지에 포함된 `tables.json`(생성일 기록됨)을 사용합니다. ECOS 통계표 목록이 바뀌면 다시 생성하세요.
-
-```bash
-ECOS_API_KEY=your_api_key_here uv run python scripts/update_tables.py
-```
-
----
 
 ## 📝 라이선스
 
