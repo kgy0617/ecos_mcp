@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
+from datetime import date, timedelta
 from typing import Any
 
 from dotenv import load_dotenv
@@ -12,9 +12,17 @@ from dotenv import load_dotenv
 # Load .env file if present
 load_dotenv()
 
+SAMPLE_API_KEY = "sample"
+
+
+def load_api_key() -> str:
+    """Read ECOS_API_KEY, falling back to the sample key when unset or blank."""
+    return (os.getenv("ECOS_API_KEY") or "").strip() or SAMPLE_API_KEY
+
+
 # ECOS API Configuration
 ECOS_BASE_URL = "https://ecos.bok.or.kr/api"
-ECOS_API_KEY = os.getenv("ECOS_API_KEY", "sample")
+ECOS_API_KEY = load_api_key()
 ECOS_RESPONSE_TYPE = "json"
 
 # Default pagination
@@ -22,6 +30,16 @@ DEFAULT_START_COUNT = 1
 DEFAULT_END_COUNT = 100
 DEFAULT_LANGUAGE = "kr"
 SAMPLE_KEY_MAX_COUNT = 10
+
+# HTTP behaviour
+HTTP_TIMEOUT_SECONDS = 30.0
+HTTP_MAX_RETRIES = 2  # retries after the first attempt (3 attempts total)
+HTTP_RETRY_BACKOFF_SECONDS = 0.5
+METADATA_CACHE_TTL_SECONDS = 6 * 60 * 60
+
+# Default look-back windows when no dates are given
+DEFAULT_RECENT_YEARS = 2
+DEFAULT_DAILY_RECENT_DAYS = 90
 
 # Valid cycle values for StatisticSearch
 VALID_CYCLES = {"A", "S", "Q", "M", "SM", "D"}
@@ -33,6 +51,9 @@ CYCLE_DESCRIPTIONS = {
     "SM": "반월 (Semi-monthly) — 포맷: YYYYMMS1 / YYYYMMS2 (예: 202401S1)",
     "D": "일간 (Daily) — 포맷: YYYYMMDD (예: 20240101)",
 }
+
+# Number of periods per year, used for year-over-year transforms
+PERIODS_PER_YEAR = {"A": 1, "S": 2, "Q": 4, "M": 12, "SM": 24}
 
 # Date validation patterns per cycle
 CYCLE_DATE_FORMATS: dict[str, tuple[str, str]] = {
@@ -56,45 +77,120 @@ def validate_date_format(cycle: str, date_str: str) -> tuple[bool, str]:
     if not rule:
         return False, f"지원되지 않는 주기입니다: '{cycle}'"
     pattern, desc = rule
-    if re.match(pattern, str(date_str).strip()):
-        return True, ""
-    return False, desc
+    value = str(date_str).strip()
+    if not re.match(pattern, value):
+        return False, desc
+    if cycle == "D":
+        try:
+            _parse_day(value)
+        except ValueError:
+            return False, f"{desc} — 존재하지 않는 날짜입니다"
+    return True, ""
 
 
-def get_default_date_range(cycle: str, recent_years: int = 2) -> tuple[str, str]:
+# ── Period arithmetic ───────────────────────────────────────────────
+
+
+def _parse_day(value: str) -> date:
+    return date(int(value[:4]), int(value[4:6]), int(value[6:8]))
+
+
+def period_to_index(cycle: str, value: str) -> int:
+    """Convert a period string (e.g. '2024Q3') to a sortable integer index."""
+    cycle = cycle.upper()
+    value = value.strip()
+    year = int(value[:4])
+    if cycle == "A":
+        return year
+    if cycle == "S":
+        return year * 2 + int(value[5]) - 1
+    if cycle == "Q":
+        return year * 4 + int(value[5]) - 1
+    if cycle == "M":
+        return year * 12 + int(value[4:6]) - 1
+    if cycle == "SM":
+        return (year * 12 + int(value[4:6]) - 1) * 2 + int(value[7]) - 1
+    if cycle == "D":
+        return _parse_day(value).toordinal()
+    raise ValueError(f"지원되지 않는 주기입니다: '{cycle}'")
+
+
+def index_to_period(cycle: str, index: int) -> str:
+    """Inverse of period_to_index."""
+    cycle = cycle.upper()
+    if cycle == "A":
+        return f"{index:04d}"
+    if cycle == "S":
+        return f"{index // 2:04d}S{index % 2 + 1}"
+    if cycle == "Q":
+        return f"{index // 4:04d}Q{index % 4 + 1}"
+    if cycle == "M":
+        return f"{index // 12:04d}{index % 12 + 1:02d}"
+    if cycle == "SM":
+        month_index, half = divmod(index, 2)
+        return f"{month_index // 12:04d}{month_index % 12 + 1:02d}S{half + 1}"
+    if cycle == "D":
+        return date.fromordinal(index).strftime("%Y%m%d")
+    raise ValueError(f"지원되지 않는 주기입니다: '{cycle}'")
+
+
+def shift_period(cycle: str, value: str, periods: int) -> str:
+    """Shift a period string by a number of periods (days for cycle 'D')."""
+    return index_to_period(cycle, period_to_index(cycle, value) + periods)
+
+
+def current_period(cycle: str, today: date | None = None) -> str:
+    """Return the period string containing today."""
+    today = today or date.today()
+    cycle = cycle.upper()
+    if cycle == "A":
+        return f"{today.year}"
+    if cycle == "S":
+        return f"{today.year}S{1 if today.month <= 6 else 2}"
+    if cycle == "Q":
+        return f"{today.year}Q{(today.month - 1) // 3 + 1}"
+    if cycle == "M":
+        return f"{today.year}{today.month:02d}"
+    if cycle == "SM":
+        return f"{today.year}{today.month:02d}S{1 if today.day <= 15 else 2}"
+    if cycle == "D":
+        return today.strftime("%Y%m%d")
+    raise ValueError(f"지원되지 않는 주기입니다: '{cycle}'")
+
+
+def get_default_date_range(
+    cycle: str,
+    recent_years: int | None = None,
+    today: date | None = None,
+) -> tuple[str, str]:
     """Calculate default start and end dates relative to today.
 
     Args:
         cycle: Period cycle (A, S, Q, M, SM, D)
-        recent_years: Number of years to look back (default: 2)
+        recent_years: Number of years to look back. When None, daily series look back
+            DEFAULT_DAILY_RECENT_DAYS days and all other cycles DEFAULT_RECENT_YEARS years.
+        today: Reference date (for tests).
 
     Returns:
         (start_date, end_date) in valid format for cycle
     """
-    now = datetime.now()
-    year = now.year
-    month = now.month
-    day = now.day
-    quarter = (month - 1) // 3 + 1
-    semi = 1 if month <= 6 else 2
-    semi_month = 1 if day <= 15 else 2
-
-    start_year = max(1950, year - max(1, recent_years))
-
+    today = today or date.today()
     cycle = cycle.upper()
-    if cycle == "A":
-        return str(start_year), str(year)
-    elif cycle == "S":
-        return f"{start_year}S1", f"{year}S{semi}"
-    elif cycle == "Q":
-        return f"{start_year}Q1", f"{year}Q{quarter}"
-    elif cycle == "M":
-        return f"{start_year}{month:02d}", f"{year}{month:02d}"
-    elif cycle == "SM":
-        return f"{start_year}{month:02d}S1", f"{year}{month:02d}S{semi_month}"
-    elif cycle == "D":
-        return f"{start_year}{month:02d}{day:02d}", f"{year}{month:02d}{day:02d}"
-    return str(start_year), str(year)
+    end = current_period(cycle, today)
+
+    if cycle == "D":
+        if recent_years is None:
+            start_day = today - timedelta(days=DEFAULT_DAILY_RECENT_DAYS)
+        else:
+            years = max(1, recent_years)
+            try:
+                start_day = today.replace(year=today.year - years)
+            except ValueError:  # Feb 29 in a non-leap target year
+                start_day = today.replace(year=today.year - years, day=28)
+        return start_day.strftime("%Y%m%d"), end
+
+    years = max(1, recent_years if recent_years is not None else DEFAULT_RECENT_YEARS)
+    return shift_period(cycle, end, -years * PERIODS_PER_YEAR[cycle]), end
 
 
 # ECOS error code descriptions
@@ -113,7 +209,8 @@ ECOS_ERROR_MAP = {
     "ERROR-602": "API 일일 호출 한도를 초과했습니다. 잠시 후 다시 시도하세요.",
 }
 
-# Popular economic indicators cheat-sheet
+# Popular economic indicators cheat-sheet.
+# Optional keys: item_code2, transform ("yoy" | "pop"), changes_only (bool).
 POPULAR_INDICATORS: list[dict[str, Any]] = [
     {
         "id": "base_rate",
@@ -125,17 +222,41 @@ POPULAR_INDICATORS: list[dict[str, Any]] = [
         "item_code1": "0101000",
         "item_name1": "한국은행 기준금리",
         "unit": "연%",
+        "changes_only": True,
+    },
+    {
+        "id": "gdp_growth",
+        "name": "경제성장률(실질 GDP, 전기비)",
+        "aliases": ["경제성장률", "성장률", "gdp성장률", "실질성장률", "gdp_growth", "growth"],
+        "stat_code": "200Y102",
+        "stat_name": "2.1.1.2. 주요지표(분기지표)",
+        "cycle": "Q",
+        "item_code1": "10111",
+        "item_name1": "국내총생산(GDP)(실질, 계절조정, 전기비)",
+        "unit": "%",
     },
     {
         "id": "gdp",
         "name": "국내총생산(실질 GDP)",
-        "aliases": ["국내총생산", "gdp", "실질gdp", "경제성장률", "성장률"],
+        "aliases": ["국내총생산", "gdp", "실질gdp"],
         "stat_code": "200Y108",
         "stat_name": "2.1.2.2.2. 국내총생산에 대한 지출(계절조정, 실질, 분기)",
         "cycle": "Q",
         "item_code1": "10601",
-        "item_name1": "국내총생산(실질)",
+        "item_name1": "국내총생산에 대한 지출",
         "unit": "십억원",
+    },
+    {
+        "id": "inflation",
+        "name": "소비자물가상승률(CPI 전년동월비)",
+        "aliases": ["물가상승률", "소비자물가상승률", "인플레이션", "inflation", "cpi상승률"],
+        "stat_code": "901Y009",
+        "stat_name": "4.2.1. 소비자물가지수",
+        "cycle": "M",
+        "item_code1": "0",
+        "item_name1": "총지수",
+        "unit": "2020=100 (yoy_pct: %)",
+        "transform": "yoy",
     },
     {
         "id": "cpi",
@@ -150,13 +271,26 @@ POPULAR_INDICATORS: list[dict[str, Any]] = [
     },
     {
         "id": "usd_krw",
-        "name": "원/달러 환율",
+        "name": "원/달러 환율(일별)",
         "aliases": ["원달러", "원/달러", "환율", "달러", "usd", "usdkrw"],
         "stat_code": "731Y001",
         "stat_name": "3.1.1.1. 주요국 통화의 대원화환율",
         "cycle": "D",
         "item_code1": "0000001",
-        "item_name1": "원/달러(매매기준율)",
+        "item_name1": "원/미국달러(매매기준율)",
+        "unit": "원",
+    },
+    {
+        "id": "usd_krw_monthly",
+        "name": "원/달러 환율(월평균)",
+        "aliases": ["월평균환율", "환율월평균", "원달러월평균", "usd_krw_monthly"],
+        "stat_code": "731Y004",
+        "stat_name": "3.1.2.1. 주요국 통화의 대원화환율",
+        "cycle": "M",
+        "item_code1": "0000001",
+        "item_name1": "원/미국달러(매매기준율)",
+        "item_code2": "0000100",
+        "item_name2": "평균자료",
         "unit": "원",
     },
     {
@@ -178,17 +312,28 @@ POPULAR_INDICATORS: list[dict[str, Any]] = [
         "stat_name": "1.1.3.1.2. M2 상품별 구성내역(평잔, 원계열)",
         "cycle": "M",
         "item_code1": "BBHA00",
-        "item_name1": "M2(광의통화, 평잔)",
+        "item_name1": "M2(평잔, 원계열)",
         "unit": "십억원",
     },
     {
         "id": "treasury_3y",
-        "name": "국고채 3년 수익률",
+        "name": "국고채 3년 수익률(일별)",
         "aliases": ["국고채", "국고채3년", "채권금리", "시장금리", "treasury"],
         "stat_code": "817Y002",
         "stat_name": "1.3.2.1. 시장금리(일별)",
         "cycle": "D",
         "item_code1": "010200000",
+        "item_name1": "국고채(3년)",
+        "unit": "연%",
+    },
+    {
+        "id": "treasury_3y_monthly",
+        "name": "국고채 3년 수익률(월평균)",
+        "aliases": ["국고채월평균", "국고채3년월평균", "treasury_3y_monthly"],
+        "stat_code": "721Y001",
+        "stat_name": "1.3.2.2. 시장금리(월,분기,년)",
+        "cycle": "M",
+        "item_code1": "5020000",
         "item_name1": "국고채(3년)",
         "unit": "연%",
     },
@@ -201,25 +346,64 @@ POPULAR_INDICATORS: list[dict[str, Any]] = [
         "cycle": "M",
         "item_code1": "*AA",
         "item_name1": "총지수",
-        "unit": "2015=100",
+        "unit": "2020=100",
     },
 ]
+
+
+def _normalize_keyword(text: str) -> str:
+    return re.sub(r"[\s/_()\-]", "", text).lower()
+
+
+def _rank_popular_indicators(keyword: str) -> list[tuple[int, dict[str, Any]]]:
+    """Score presets against keyword (higher is better); non-matches are dropped.
+
+    - exact id/name/alias match: 1000
+    - an alias or name appears inside the keyword ("최근 기준금리 추이"): 100 + its length
+    - the keyword appears inside an alias or name ("통화" → "본원통화"): 1
+    """
+    kw = _normalize_keyword(keyword)
+    if not kw:
+        return []
+
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for ind in POPULAR_INDICATORS:
+        keys = [_normalize_keyword(k) for k in (ind["id"], ind["name"], *ind.get("aliases", []))]
+        if kw in keys:
+            score = 1000
+        else:
+            contained = [len(k) for k in keys if len(k) >= 2 and k in kw]
+            if contained:
+                score = 100 + max(contained)
+            elif any(kw in k for k in keys):
+                score = 1
+            else:
+                continue
+        ranked.append((score, ind))
+    ranked.sort(key=lambda pair: -pair[0])
+    return ranked
+
+
+def match_popular_indicators(keyword: str) -> list[dict[str, Any]]:
+    """Return presets matching keyword, best matches first."""
+    return [ind for _, ind in _rank_popular_indicators(keyword)]
 
 
 def find_popular_indicator(keyword: str) -> dict[str, Any] | None:
     """Find a popular indicator by name, alias, or ID.
 
+    Returns the preset only when a single best match exists; ambiguous keywords
+    (e.g. '통화', '지수') return None so the caller can list candidates.
+
     Args:
         keyword: Search query (e.g. '기준금리', 'GDP', '물가', '환율')
 
     Returns:
-        Indicator preset dict or None if not matched
+        Indicator preset dict or None if not matched (or ambiguous)
     """
-    clean_kw = keyword.strip().lower().replace("/", "").replace(" ", "").replace("_", "")
-    for ind in POPULAR_INDICATORS:
-        if clean_kw == ind["id"].lower() or clean_kw in ind["name"].lower().replace("/", "").replace(" ", ""):
-            return ind
-        for alias in ind.get("aliases", []):
-            if clean_kw == alias.lower().replace("/", "").replace(" ", ""):
-                return ind
+    ranked = _rank_popular_indicators(keyword)
+    if not ranked:
+        return None
+    if len(ranked) == 1 or ranked[0][0] > ranked[1][0]:
+        return ranked[0][1]
     return None

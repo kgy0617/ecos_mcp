@@ -8,30 +8,40 @@ AI 에이전트(Claude Desktop, Cursor 등)가 한국 거시경제 통계 데이
 
 ## ✨ 핵심 기능
 
-### 🛠️ MCP Tools (8개)
+### 🛠️ MCP Tools (7개)
+
+모든 도구는 읽기 전용(`readOnlyHint`)으로 표시되어 있고, 실패 시 MCP 표준 에러(`isError: true`)를 반환합니다.
 
 | Tool | 설명 | 주요 특징 |
 |------|------|-----------|
-| `get_popular_statistic` | **1-Shot 인기 지표 즉시 조회** (NEW) | 기준금리, GDP, 물가, 환율 등을 코드 검색 없이 한 번의 호출로 즉시 조회 |
-| `search_statistics` | **통계 시계열 데이터 조회** (핵심) | 스마트 날짜 자동 추정, 날짜 규격 검증, 컴팩트/CSV 포맷 지원 |
-| `search_statistic_tables` | **통계표 키워드 검색** | 844개 전체 통계표 대상 초고속 이름 검색 ("물가", "금리", "GDP" 등) |
+| `get_popular_statistic` | **1-Shot 인기 지표 즉시 조회** | 기준금리, 성장률, 물가상승률, 환율 등을 코드 검색 없이 한 번의 호출로 조회 |
+| `search_statistics` | **통계 시계열 데이터 조회** (핵심) | 스마트 날짜, 최신 구간 우선, 증감률 계산(`transform`), 컴팩트/CSV 포맷 |
+| `search_statistic_tables` | **통계표 검색·계층 탐색** | 로컬 인덱스로 즉시 응답. 띄어쓰기 무시·다중 단어·관련도 순 정렬, `parent_code`로 분류 트리 탐색 |
 | `get_key_statistics` | 100대 주요 경제지표 조회 | GDP, 기준금리, 환율, 통화량 등 실시간 핵심 지표 |
-| `list_statistic_tables` | 통계표 목록/계층 구조 조회 | 상위 분류별 계층 탐색 및 실제 조회 가능 표(`SRCH_YN='Y'`) 필터 |
-| `search_statistic_word` | 통계 용어 사전 검색 | 한국은행 공식 용어 해설 (슬래시 등 특수문자 안전 인코딩) |
-| `list_statistic_items` | 통계표 세부항목 목록 조회 | 특정 통계표의 항목코드, 지원 주기, 수록 기간 확인 |
-| `get_statistic_meta` | 통계 메타데이터 조회 | 통계 작성 배경, 작성 주기, 편제 기준 등 상세 메타정보 |
+| `search_statistic_word` | 통계 용어 사전 검색 | 한국은행 공식 용어 해설 |
+| `list_statistic_items` | 통계표 세부항목 목록 조회 | 항목코드, 지원 주기, 수록 기간, 단위 확인 (결과 캐시) |
+| `get_statistic_meta` | 통계 메타데이터 조회 | 통계 작성 배경, 작성 주기, 편제 기준 등 (결과 캐시) |
 
-### ⚡ 토큰 최적화 포맷 (`format`)
+### ⚡ 토큰 최적화 포맷 (`output_format`)
 
-시계열 데이터 조회(`search_statistics`, `get_popular_statistic`) 시 토큰 소모를 극적으로 줄일 수 있습니다:
+시계열 조회(`search_statistics`, `get_popular_statistic`) 결과는 공백 없는 JSON으로 반환됩니다.
 
-- **`format="compact"`** (기본값): 중복 메타데이터와 null 필드를 제거한 깔끔한 JSON (**토큰 ~70% 절감**)
-- **`format="csv"`**: CSV 텍스트 포맷으로 차트 생성 및 장기 시계열 분석에 최적 (**토큰 ~85% 절감**)
-- **`format="json"`**: ECOS 공식 전체 원본 JSON
+- **`"compact"`** (기본값): 계열(항목)별로 이름·단위를 한 번만 쓰고 값은 `[시점, 값]` 배열로 반환
+- **`"csv"`**: 한 줄에 관측치 하나. 여러 항목을 표·차트로 옮길 때 편리
+- **`"json"`**: ECOS 원본 행 그대로
 
-### 🗓️ 스마트 날짜 자동 추정 (Smart Date Fallback)
+측정 예시(소비자물가지수 24개월 단일 계열, 문자 수 기준): 원본 JSON 6,545자 → compact 605자(약 91% 축소), csv 805자.
 
-`start_date`나 `end_date`를 지정하지 않으면, 주기에 맞춰 **최근 2년치 데이터 범위가 자동으로 계산**되어 즉시 반환됩니다.
+### 📈 증감률·변경 시점 (`transform`, `changes_only`)
+
+- `transform="yoy"`: 전년동기대비 증감률(%) 열(`yoy_pct`) 추가. 기준 시점 데이터는 자동으로 함께 조회합니다.
+- `transform="pop"`: 직전 관측치 대비 증감률(%) 열(`pop_pct`) 추가
+- `changes_only=True`: 값이 바뀐 시점만 반환 (예: 일별 기준금리 2년치 약 500행 → 변경 시점 몇 행)
+
+### 🗓️ 스마트 날짜 & 최신 구간 우선
+
+- `start_date`/`end_date`를 생략하면 **일간(D)은 최근 3개월, 그 외 주기는 최근 2년**이 자동 설정됩니다.
+- 결과가 한 번에 다 담기지 않으면(`end_count` 초과, sample 키는 10건) **가장 최근 구간**을 반환하고 `truncated: true`와 안내 문구를 붙입니다. 과거부터 페이지 단위로 받으려면 `prefer_latest=False`를 쓰세요.
 
 ---
 
@@ -42,7 +52,7 @@ AI 에이전트(Claude Desktop, Cursor 등)가 한국 거시경제 통계 데이
 - `ecos://date-format-guide`: 주기(Cycle)별 올바른 날짜 포맷 규격 안내서
 
 ### Prompts
-- `macro-economic-briefing`: 100대 지표 기반 대한민국 경제 현황 종합 분석 및 브리핑 보고서
+- `macro-economic-briefing`: 100대 지표와 성장률·물가상승률·기준금리·환율 추이 기반 경제 현황 브리핑
 - `analyze-economic-trend`: 특정 경제 지표(소비자물가지수 등) 시계열 추이 및 정책 시사점 심층 분석
 
 ---
@@ -62,16 +72,22 @@ AI 에이전트(Claude Desktop, Cursor 등)가 한국 거시경제 통계 데이
 
 ## 📌 주요 인기 통계표 프리셋
 
-| 지표명 | 키워드(별칭) | 통계표코드 | 주기 | 항목코드 |
-|--------|-------------|:---:|:---:|:---:|
-| **한국은행 기준금리** | `기준금리`, `금리`, `base_rate` | `722Y001` | `D` | `0101000` |
-| **실질 GDP(분기)** | `GDP`, `실질GDP`, `국내총생산` | `200Y108` | `Q` | `10601` |
-| **소비자물가지수(CPI)** | `CPI`, `소비자물가`, `물가` | `901Y009` | `M` | `0` |
-| **원/달러 환율** | `환율`, `원달러`, `달러`, `USD` | `731Y001` | `D` | `0000001` |
-| **본원통화(평잔)** | `본원통화`, `reserve_money` | `102Y004` | `M` | `ABA1` |
-| **M2 광의통화** | `M2`, `통화량`, `광의통화` | `161Y006` | `M` | `BBHA00` |
-| **국고채(3년) 수익률** | `국고채`, `국고채3년`, `채권금리` | `817Y002` | `D` | `010200000` |
-| **생산자물가지수(PPI)** | `PPI`, `생산자물가` | `404Y014` | `M` | `*AA` |
+| 지표명 | 키워드(별칭) | 통계표코드 | 주기 | 항목코드 | 기본 처리 |
+|--------|-------------|:---:|:---:|:---:|:---:|
+| **한국은행 기준금리** | `기준금리`, `금리`, `base_rate` | `722Y001` | `D` | `0101000` | 변경 시점만 |
+| **경제성장률(실질, 전기비 %)** | `성장률`, `경제성장률`, `GDP성장률` | `200Y102` | `Q` | `10111` | |
+| **실질 GDP(분기, 십억원)** | `GDP`, `실질GDP`, `국내총생산` | `200Y108` | `Q` | `10601` | |
+| **소비자물가상승률(%)** | `물가상승률`, `인플레이션` | `901Y009` | `M` | `0` | `yoy` |
+| **소비자물가지수(CPI)** | `CPI`, `소비자물가`, `물가` | `901Y009` | `M` | `0` | |
+| **원/달러 환율(일별)** | `환율`, `원달러`, `달러`, `USD` | `731Y001` | `D` | `0000001` | |
+| **원/달러 환율(월평균)** | `월평균환율`, `usd_krw_monthly` | `731Y004` | `M` | `0000001`/`0000100` | |
+| **본원통화(평잔)** | `본원통화`, `reserve_money` | `102Y004` | `M` | `ABA1` | |
+| **M2 광의통화** | `M2`, `통화량`, `광의통화` | `161Y006` | `M` | `BBHA00` | |
+| **국고채(3년) 수익률(일별)** | `국고채`, `국고채3년`, `채권금리` | `817Y002` | `D` | `010200000` | |
+| **국고채(3년) 수익률(월평균)** | `국고채월평균`, `treasury_3y_monthly` | `721Y001` | `M` | `5020000` | |
+| **생산자물가지수(PPI)** | `PPI`, `생산자물가` | `404Y014` | `M` | `*AA` | |
+
+`"통화"`, `"지수"`처럼 여러 지표에 걸치는 키워드는 후보 목록을 담은 에러를 돌려주므로, 더 구체적인 키워드나 `id`를 쓰면 됩니다.
 
 ---
 
@@ -135,6 +151,12 @@ uv run ecos-mcp --check
 }
 ```
 
+### Claude Code
+
+```bash
+claude mcp add ecos -e ECOS_API_KEY=your_api_key_here -- uvx --from git+https://github.com/kgy0617/ecos_mcp ecos-mcp
+```
+
 ### Cursor
 Settings > Features > MCP Servers > Add New MCP Server:
 - **방법 A (GitHub 직접 실행)**:
@@ -150,28 +172,158 @@ Settings > Features > MCP Servers > Add New MCP Server:
 
 ## 📖 사용 예시
 
-### 1. 인기 지표 원스톱 조회 (1-Shot)
-> "최근 기준금리 추이 보여줘"
-* `get_popular_statistic(indicator="기준금리", recent_years=2)` 한 번으로 2년치 데이터 즉시 반환
+### 1. 인기 지표 원스톱 조회 (`get_popular_statistic`)
+> **사용자**: "최근 한국 기준금리 어떻게 바뀌었어?"
 
-### 2. CSV 포맷으로 차트 그리기
-> "소비자물가지수 최근 3년치 CSV로 뽑아서 분석해줘"
-* `get_popular_statistic(indicator="CPI", recent_years=3, format="csv")`
+**Tool 호출**:
+```json
+{
+  "indicator": "기준금리",
+  "recent_years": 2,
+  "output_format": "compact"
+}
+```
 
-### 3. 통계표 검색 후 세부 항목 분석
-> "생산자물가지수 농림수산품 추이 보여줘"
-1. `search_statistic_tables("생산자물가")` → `STAT_CODE="404Y014"`
-2. `list_statistic_items("404Y014")` → 농림수산품 항목코드 확인
-3. `search_statistics(stat_code="404Y014", cycle="M", item_code1="...")`
+**응답 예시** (일별 500여 행 대신 `changes_only=True`가 기본 적용되어 **금리 변동 시점만** 간결하게 반환):
+```json
+{
+  "stat_code": "722Y001",
+  "stat_name": "한국은행 기준금리 및 여수신금리",
+  "indicator": "base_rate",
+  "total_count": 500,
+  "count": 3,
+  "columns": ["time", "value"],
+  "series": [
+    {
+      "item": "한국은행 기준금리",
+      "item_code": "0101000",
+      "unit": "연%",
+      "data": [
+        ["20230113", 3.5],
+        ["20241011", 3.25],
+        ["20241128", 3.0]
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### 2. 물가상승률 CSV 수신 후 차트 분석
+> **사용자**: "소비자물가 상승률 최근 데이터 CSV로 뽑아서 분석해줘"
+
+**Tool 호출**:
+```json
+{
+  "indicator": "물가상승률",
+  "recent_years": 1,
+  "output_format": "csv"
+}
+```
+
+**응답 예시** (`transform="yoy"`가 자동 적용되어 전년동기대비 증감률 열인 `YOY_PCT`가 포함됨):
+```csv
+# stat_code: 901Y009
+# stat_name: 4.2.1. 소비자물가지수
+# indicator: inflation_rate
+# total_count: 12
+# count: 12
+TIME,ITEM_CODE,ITEM,VALUE,UNIT,YOY_PCT
+202401,0,총지수,113.15,2020=100,2.8
+202402,0,총지수,113.77,2020=100,3.1
+202403,0,총지수,113.94,2020=100,3.1
+202404,0,총지수,114.09,2020=100,2.9
+202405,0,총지수,114.14,2020=100,2.7
+...
+```
+
+---
+
+### 3. 통계표 키워드 검색 및 계층 탐색 (`search_statistic_tables`)
+> **사용자**: "소비자물가 관련 통계표 찾아줘"
+
+**Tool 호출**:
+```json
+{
+  "keyword": "소비자 물가",
+  "searchable_only": true,
+  "limit": 3
+}
+```
+
+**응답 예시** (로컬 인덱스 기반으로 띄어쓰기 무시 및 관련도 순 정렬):
+```json
+{
+  "query": "소비자 물가",
+  "total_matches": 3,
+  "count": 2,
+  "searchable_only": true,
+  "index_generated_at": "2026-09-26",
+  "rows": [
+    {
+      "P_STAT_CODE": "0000000211",
+      "STAT_CODE": "901Y009",
+      "STAT_NAME": "4.2.1. 소비자물가지수",
+      "CYCLE": "M",
+      "SRCH_YN": "Y",
+      "ORG_NAME": "국가데이터처(02-2012-9114)"
+    },
+    {
+      "P_STAT_CODE": "0000000211",
+      "STAT_CODE": "901Y010",
+      "STAT_NAME": "4.2.2. 소비자물가지수(특수분류)",
+      "CYCLE": "M",
+      "SRCH_YN": "Y",
+      "ORG_NAME": "국가데이터처(02-2012-9114)"
+    }
+  ]
+}
+```
+*Tip*: `parent_code="0000000211"`를 지정하면 해당 분류의 하위 통계표 트리를 직접 탐색할 수도 있습니다.
+
+---
+
+### 4. 통계 용어 사전 검색 (`search_statistic_word`)
+> **사용자**: "한국은행에서 정의하는 기준금리의 정확한 의미가 뭐야?"
+
+**Tool 호출**:
+```json
+{
+  "word": "기준금리"
+}
+```
+
+**응답 예시**:
+```json
+{
+  "total_count": 1,
+  "count": 1,
+  "rows": [
+    {
+      "WORD": "기준금리",
+      "CONTENT": "한국은행이 금융기관과 환매조건부증권(RP) 매매, 자금조정 예금 및 대출 등의 거래를 할 때 기준이 되는 정책금리"
+    }
+  ]
+}
+```
 
 ---
 
 ## 🧪 테스트 실행
 
 ```bash
-uv run python test_smoke.py
+uv run pytest            # 오프라인 단위 테스트 (ECOS API를 모킹, 네트워크 불필요)
+uv run pytest -m live    # 실제 ECOS API 호출 테스트 (모든 프리셋 조회 확인)
 ```
-10개 핵심 기능(100대 지표, 키워드 검색, 계층 조회, 용어, 항목, 시계열, 메타, 날짜 검증, 스마트 날짜, 컴팩트/CSV 포맷)을 종합 검증합니다.
+
+## 🗂️ 통계표 인덱스 갱신
+
+`search_statistic_tables`는 패키지에 포함된 `tables.json`(생성일 기록됨)을 사용합니다. ECOS 통계표 목록이 바뀌면 다시 생성하세요.
+
+```bash
+ECOS_API_KEY=your_api_key_here uv run python scripts/update_tables.py
+```
 
 ---
 

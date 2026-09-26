@@ -1,6 +1,6 @@
 [project]
 name = "ecos-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Bank of Korea ECOS (Economic Statistics System) Open API"
 readme = "README.md"
 license = { text = "MIT" }
@@ -15,10 +15,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial",
 ]
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    "mcp[cli]>=2.0,<3",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
 ]
@@ -30,6 +31,19 @@ Issues = "https://github.com/kgy0617/ecos_mcp/issues"
 
 [project.scripts]
 ecos-mcp = "ecos_mcp:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "respx>=0.21",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = [
+    "live: calls the real ECOS API (run with: uv run pytest -m live)",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]
